@@ -388,6 +388,10 @@
       "description": "Get lifestyle logging data for a specific date"
     },
     {
+      "name": "get_lifestyle_logging_range",
+      "description": "Get compact lifestyle logging entries for a date range"
+    },
+    {
       "name": "get_menstrual_calendar_data",
       "description": "Get menstrual calendar data between specified dates"
     },

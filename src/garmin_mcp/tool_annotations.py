@@ -153,6 +153,7 @@ READ_ONLY_TOOLS = frozenset(
         "get_inprogress_virtual_challenges",
         "get_lactate_threshold",
         "get_lifestyle_logging_data",
+        "get_lifestyle_logging_range",
         "get_menstrual_calendar_data",
         "get_menstrual_data_for_date",
         "get_morning_training_readiness",

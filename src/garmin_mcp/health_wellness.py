@@ -15,6 +15,44 @@ def configure(client):
     garmin_client = client
 
 
+_LIFESTYLE_MAX_DAYS = 92
+
+
+def _lifestyle_entry(log: Dict[str, Any]) -> Dict[str, Any]:
+    """One behaviour as name/category, plus amounts actually logged."""
+    entry: Dict[str, Any] = {"name": log.get("name"), "category": log.get("category")}
+    amounts = {
+        d.get("subTypeName"): d["amount"]
+        for d in log.get("details") or []
+        if isinstance(d, dict) and d.get("amount")
+    }
+    if amounts:
+        entry["amounts"] = amounts
+    return entry
+
+
+def _compact_lifestyle_day(
+    data: Any, include_no: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Reduce a dailyLog response to the YES (and optionally NO) behaviours.
+
+    Garmin returns every tracked behaviour each day; ``logStatus`` is YES or
+    NO once the day is filled in and missing before that (quantity
+    behaviours then carry only the sub-type catalogue, no amounts).
+    Returns None when nothing was logged that day.
+    """
+    logs = data.get("dailyLogsReport") if isinstance(data, dict) else None
+    logs = [log for log in logs or [] if isinstance(log, dict)]
+    yes = [_lifestyle_entry(log) for log in logs if log.get("logStatus") == "YES"]
+    no = [log.get("name") for log in logs if log.get("logStatus") == "NO"]
+    if not yes and not no:
+        return None
+    day: Dict[str, Any] = {"yes": yes}
+    if include_no:
+        day["no"] = no
+    return day
+
+
 def _as_snapshot_list(payload: Any) -> List[Dict[str, Any]]:
     """Normalize training-readiness payloads to a list of dicts."""
     if isinstance(payload, list):
@@ -1532,6 +1570,57 @@ def register_tools(app):
             return json.dumps(data, indent=2)
         except Exception as e:
             return f"Error retrieving lifestyle logging data: {str(e)}"
+
+    @app.tool()
+    async def get_lifestyle_logging_range(
+        start_date: str, end_date: str, include_no: bool = False
+    ) -> str:
+        """Get compact lifestyle logging entries for a date range
+
+        One call per day is made internally; at most 92 days per request.
+        Each day lists only the behaviours marked YES (with drink amounts for
+        quantity behaviours such as caffeine and alcohol). Days the user has
+        not filled in are listed under ``not_logged`` instead.
+
+        Args:
+            start_date: First date in YYYY-MM-DD format
+            end_date: Last date in YYYY-MM-DD format (inclusive)
+            include_no: Also list behaviours explicitly marked NO per day
+        """
+        try:
+            start = datetime.date.fromisoformat(start_date)
+            end = datetime.date.fromisoformat(end_date)
+        except (TypeError, ValueError):
+            return "Error: start_date and end_date must be dates in YYYY-MM-DD format"
+        if end < start:
+            return "Error: end_date must not be before start_date"
+        span = (end - start).days + 1
+        if span > _LIFESTYLE_MAX_DAYS:
+            return f"Error: range is {span} days, at most {_LIFESTYLE_MAX_DAYS} days per request"
+
+        try:
+            days: List[Dict[str, Any]] = []
+            not_logged: List[str] = []
+            for offset in range(span):
+                date = (start + datetime.timedelta(days=offset)).isoformat()
+                data = garmin_client.get_lifestyle_logging_data(date)
+                day = _compact_lifestyle_day(data, include_no)
+                if day is None:
+                    not_logged.append(date)
+                else:
+                    days.append({"date": date, **day})
+            return json.dumps(
+                {
+                    "start_date": start.isoformat(),
+                    "end_date": end.isoformat(),
+                    "days": days,
+                    "not_logged": not_logged,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return f"Error retrieving lifestyle logging range: {str(e)}"
 
     @app.tool()
     async def get_weekly_steps(end_date: str, weeks: int = 4) -> str:
