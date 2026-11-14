@@ -1688,3 +1688,107 @@ async def test_training_readiness_empty_dictionary_remains_no_data(
     mock_garmin_client.get_training_readiness.return_value = {}
     result = await app_with_health_wellness.call_tool("get_training_readiness", {"date": "2024-01-15"})
     assert result[0][0].text == "No training readiness data found for 2024-01-15"
+
+
+def _lifestyle_day(date, filled=True):
+    """dailyLog response in the shape the live API returns (2026-11)."""
+    if not filled:
+        return {
+            "calendarDate": date,
+            "dailyLogsReport": [
+                {"behaviourId": 2, "name": "Morning Caffeine", "category": "LIFESTYLE",
+                 "measurementType": "QUANTITY", "calendarDate": date,
+                 "details": [{"subTypeId": 1, "subTypeName": "COFFEE"},
+                             {"subTypeId": 2, "subTypeName": "TEA"}]},
+                {"behaviourId": 35, "name": "Illness", "category": "LIFE_STATUS",
+                 "measurementType": "NONE", "calendarDate": date},
+            ],
+        }
+    return {
+        "calendarDate": date,
+        "dailyLogsReport": [
+            {"behaviourId": 1, "name": "Alcohol", "category": "LIFESTYLE",
+             "measurementType": "QUANTITY", "calendarDate": date, "logStatus": "NO"},
+            {"behaviourId": 2, "name": "Morning Caffeine", "category": "LIFESTYLE",
+             "measurementType": "QUANTITY", "calendarDate": date, "logStatus": "YES",
+             "details": [{"subTypeId": 1, "subTypeName": "COFFEE", "amount": 2}]},
+            {"behaviourId": 466996, "name": "Pajzsmirigy gyógyszer", "category": "CUSTOM",
+             "measurementType": "NONE", "calendarDate": date, "logStatus": "YES"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_lifestyle_logging_range_compacts_days(app_with_health_wellness, mock_garmin_client):
+    """Only YES behaviours with amounts are kept; unfilled days go to not_logged"""
+    mock_garmin_client.get_lifestyle_logging_data.side_effect = lambda d: _lifestyle_day(
+        d, filled=d != "2026-11-14"
+    )
+
+    result = await app_with_health_wellness.call_tool(
+        "get_lifestyle_logging_range",
+        {"start_date": "2026-11-13", "end_date": "2026-11-14"},
+    )
+    data = json.loads(result[0][0].text if isinstance(result, tuple) else result[0].text)
+
+    assert data["not_logged"] == ["2026-11-14"]
+    assert data["days"] == [
+        {
+            "date": "2026-11-13",
+            "yes": [
+                {"name": "Morning Caffeine", "category": "LIFESTYLE", "amounts": {"COFFEE": 2}},
+                {"name": "Pajzsmirigy gyógyszer", "category": "CUSTOM"},
+            ],
+        }
+    ]
+    assert mock_garmin_client.get_lifestyle_logging_data.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_lifestyle_logging_range_include_no(app_with_health_wellness, mock_garmin_client):
+    """include_no adds the behaviours explicitly marked NO"""
+    mock_garmin_client.get_lifestyle_logging_data.side_effect = _lifestyle_day
+
+    result = await app_with_health_wellness.call_tool(
+        "get_lifestyle_logging_range",
+        {"start_date": "2026-11-13", "end_date": "2026-11-13", "include_no": True},
+    )
+    data = json.loads(result[0][0].text if isinstance(result, tuple) else result[0].text)
+
+    assert data["days"][0]["no"] == ["Alcohol"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start, end, message",
+    [
+        ("2026-11-14", "2026-11-13", "must not be before"),
+        ("2026-01-01", "2026-12-31", "at most 92 days"),
+        ("14/11/2026", "2026-11-14", "YYYY-MM-DD"),
+    ],
+)
+async def test_get_lifestyle_logging_range_rejects_bad_ranges(
+    app_with_health_wellness, mock_garmin_client, start, end, message
+):
+    """Invalid ranges are rejected before any API call"""
+    result = await app_with_health_wellness.call_tool(
+        "get_lifestyle_logging_range", {"start_date": start, "end_date": end}
+    )
+    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+
+    assert message in text
+    mock_garmin_client.get_lifestyle_logging_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_lifestyle_logging_range_exception(app_with_health_wellness, mock_garmin_client):
+    """API failures are reported as an error message"""
+    mock_garmin_client.get_lifestyle_logging_data.side_effect = Exception("API Error")
+
+    result = await app_with_health_wellness.call_tool(
+        "get_lifestyle_logging_range",
+        {"start_date": "2026-11-13", "end_date": "2026-11-14"},
+    )
+    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+
+    assert "Error retrieving lifestyle logging range" in text

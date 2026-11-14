@@ -55,6 +55,7 @@ HEALTH_TOOLS = CORE_TOOLS | frozenset(
         "get_heart_rates_summary",
         "get_hydration_data",
         "get_lifestyle_logging_data",
+        "get_lifestyle_logging_range",
         "get_morning_training_readiness",
         "get_recovery_time_remaining",
         "get_respiration_data",
